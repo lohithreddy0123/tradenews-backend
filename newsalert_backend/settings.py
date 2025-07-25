@@ -40,7 +40,10 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 
 # Application definition
 
+ASGI_APPLICATION = 'newsalert_backend.asgi.application'
+
 INSTALLED_APPS = [
+  'channels',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
