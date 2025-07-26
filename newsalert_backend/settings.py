@@ -35,7 +35,7 @@ load_dotenv(dotenv_path=BASE_DIR.parent / ".env")
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 
 
 # Application definition

@@ -5,14 +5,15 @@ from django.http import JsonResponse
 from dotenv import load_dotenv
 
 load_dotenv()
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 
 def get_news_for_stock(request, stock_name=None):
-    if not NEWS_API_KEY:
-        return JsonResponse({"error": "Missing News API key."}, status=500)
+    if not FINNHUB_API_KEY:
+        return JsonResponse({"error": "Missing Finnhub API key."}, status=500)
 
-    # Support optional query param `keywords=bitcoin,crypto`
+    # Extract GET parameters
     raw_keywords = request.GET.get("keywords")
+    symbol_param = request.GET.get("symbol", "").strip().upper()
     limit = request.GET.get("limit", 5)
 
     try:
@@ -20,60 +21,60 @@ def get_news_for_stock(request, stock_name=None):
     except ValueError:
         limit = 5
 
+    # Prepare keywords if any
     if raw_keywords:
         keywords = [k.strip() for k in raw_keywords.split(",") if k.strip()]
     elif stock_name:
-        # Fallback to URL path param
         clean_name = re.sub(r"\(.*?\)", "", stock_name).strip()
         keywords = [clean_name]
     else:
-        return JsonResponse({"error": "No stock name or keywords provided."}, status=400)
+        keywords = []
 
-    query = " OR ".join(
-    [f'"{word}"' if " " in word else word for word in keywords]
-)
+    # ✅ Determine symbol: prioritize explicit `symbol`, fallback to name-based
+    if symbol_param:
+        symbol = symbol_param
+    elif stock_name:
+        symbol = re.sub(r"\(.*?\)", "", stock_name).strip().upper()
+    elif keywords:
+        symbol = keywords[0].upper()
+    else:
+        return JsonResponse({"error": "No symbol or keywords provided."}, status=400)
 
-    print(f"🌐 Fetching news for: {keywords} → Query: {query} | Limit={limit}")
+    print(f"🌐 [Finnhub] Fetching news for: {symbol}")
 
-    url = "https://newsapi.org/v2/everything"
+    from datetime import datetime, timedelta
+    to_date = datetime.utcnow().date().isoformat()
+    from_date = (datetime.utcnow() - timedelta(days=5)).date().isoformat()
+
+    url = "https://finnhub.io/api/v1/company-news"
     params = {
-        "q": query,
-        "sortBy": "publishedAt",
-        "language": "en",
-        "pageSize": limit,
-        "apiKey": NEWS_API_KEY,
+        "symbol": symbol,
+        "from": from_date,
+        "to": to_date,
+        "token": FINNHUB_API_KEY,
     }
 
     response = requests.get(url, params=params)
-    print(f"📡 News API status code: {response.status_code}")
+    print(f"📡 Finnhub API status code: {response.status_code}")
 
     try:
         data = response.json()
         print("📰 Raw response snippet:", str(data)[:300])
 
-        if response.status_code == 200 and data.get("status") == "ok":
+        if isinstance(data, list) and data:
             articles = [
                 {
-                    "title": article.get("title"),
-                    "description": article.get("description"),
-                    "source": article.get("source", {}).get("name"),
-                    "url": article.get("url"),
-                    "publishedAt": article.get("publishedAt"),
+                    "title": a.get("headline"),
+                    "description": a.get("summary"),
+                    "source": a.get("source"),
+                    "url": a.get("url"),
+                    "publishedAt": a.get("datetime"),
                 }
-                for article in data.get("articles", [])
+                for a in data[:limit]
             ]
-
-            if not articles:
-                print(f"ℹ️ No articles found for query: {query}")
-
             return JsonResponse({"articles": articles})
         else:
-            print("⚠️ NewsAPI error message:", data.get("message", "Unknown error"))
-            return JsonResponse(
-                {"error": data.get("message", "Failed to fetch news")},
-                status=response.status_code,
-            )
-
+            return JsonResponse({"articles": []})
     except Exception as e:
-        print("❌ Error parsing NewsAPI response:", str(e))
+        print("❌ Error parsing Finnhub response:", str(e))
         return JsonResponse({"error": "Internal server error"}, status=500)

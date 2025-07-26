@@ -4,10 +4,14 @@ import aiohttp
 from datetime import datetime, timedelta
 from channels.generic.websocket import AsyncWebsocketConsumer
 import openai
+from dotenv import load_dotenv
 
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+load_dotenv()
+
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
+
 
 class NewsConsumer(AsyncWebsocketConsumer):
     async def connect(self):
@@ -22,30 +26,28 @@ class NewsConsumer(AsyncWebsocketConsumer):
 
         try:
             data = json.loads(text_data)
-        except json.JSONDecodeError as e:
-            print("❌ [JSON] Decode error:", e)
+        except json.JSONDecodeError:
             await self.send(json.dumps({"error": "Invalid JSON format"}))
             return
 
         if data.get("action") == "start":
             keywords = data.get("keywords")
-            print(f"📦 [Frontend] Keywords received: {keywords}")
+            symbol = data.get("symbol", "").strip().upper()
+
+            print(f"📦 Keywords received: {keywords}")
+            print(f"🏷️ Symbol received: {symbol}")
+
+            if not symbol:
+                await self.send(json.dumps({"error": "Missing or invalid symbol"}))
+                return
 
             if not keywords or not isinstance(keywords, list):
                 await self.send(json.dumps({"error": "No valid keywords provided"}))
                 return
 
-            # Properly quote keywords with spaces
-            query_terms = [
-                f'"{kw}"' if " " in kw else kw for kw in keywords
-            ]
-            query = " OR ".join(query_terms)
-            print(f"🔍 [NewsAPI] Constructed query: {query}")
-
-            article_text = await self.fetch_news(query)
+            article_text = await self.fetch_news(symbol)
 
             if not article_text:
-                print("⚠️ [NewsAPI] No articles found.")
                 await self.send(json.dumps({
                     "headline": f"⚠️ No News Found for {' / '.join(keywords)}",
                     "summary": "Try another stock or wait for updates.",
@@ -53,46 +55,46 @@ class NewsConsumer(AsyncWebsocketConsumer):
                     "direction": "Sideways",
                     "sentiment": "neutral",
                     "time": datetime.utcnow().isoformat(),
-                    "source": "News API",
+                    "source": "Finnhub",
                     "traderAdvice": "No action recommended.",
                 }))
                 return
 
-            print("📰 [NewsAPI] Article fetched, sending to OpenAI...")
             ai_response = await self.analyze_with_openai(article_text, ', '.join(keywords))
-            print("✅ [OpenAI] Response received.")
-
             await self.send(text_data=json.dumps(ai_response))
 
-    async def fetch_news(self, query):
-        from_date = (datetime.utcnow() - timedelta(days=3)).date().isoformat()
+    async def fetch_news(self, symbol):
+        from_date = (datetime.utcnow() - timedelta(days=5)).date().isoformat()
+        to_date = datetime.utcnow().date().isoformat()
+
         url = (
-            f"https://newsapi.org/v2/everything"
-            f"?q={query}&from={from_date}&sortBy=popularity&pageSize=1&language=en"
-            f"&apiKey={NEWS_API_KEY}"
+            f"https://finnhub.io/api/v1/company-news"
+            f"?symbol={symbol}&from={from_date}&to={to_date}&token={FINNHUB_API_KEY}"
         )
 
-        print(f"🌐 [NewsAPI] Request URL:\n{url}")
+        print(f"🌐 Finnhub Request URL:\n{url}")
 
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
-                print(f"📡 [NewsAPI] Status code: {response.status}")
-
+                print(f"📡 Finnhub API status: {response.status}")
                 try:
                     data = await response.json()
+                    print("📰 Full Finnhub News Response (first 8 shown):\n", json.dumps(data[:8], indent=2))
                 except Exception as e:
-                    print("❌ [NewsAPI] Failed to parse response:", e)
+                    print("❌ Failed to parse response:", e)
                     return None
 
-                print("🧾 [NewsAPI] Response preview:", json.dumps(data, indent=2)[:800])
+                if isinstance(data, list) and len(data):
+                    articles = data[:6]  # ✅ Take first 6 articles for processing
 
-                if data.get("status") == "ok" and data.get("articles"):
-                    article = data["articles"][0]
-                    title = article.get("title", "")
-                    desc = article.get("description", "")
-                    trimmed = f"{title}\n\n{desc}".strip()
-                    print("✂️ [NewsAPI] Trimmed article preview:", trimmed[:300], "...")
-                    return trimmed[:1500]
+                    trimmed = ""
+                    for i, article in enumerate(articles, start=1):
+                        headline = article.get("headline", "")
+                        summary = article.get("summary", "")
+                        trimmed += f"Article {i}:\nHeadline: {headline}\nSummary: {summary}\n\n"
+
+                    print("🧾 Trimmed multi-article block:\n", trimmed[:500])
+                    return trimmed[:3000]  # safe size limit
 
         return None
 
@@ -109,16 +111,15 @@ Given this news related to "{topic_label}", analyze and return structured output
   "direction": "...",  // Up, Down, Sideways
   "sentiment": "...",  // positive, negative, neutral
   "time": "...",  // ISO timestamp
-  "source": "News API",
+  "source": "Finnhub",
   "traderAdvice": "..."
 }}
 
 News:
-\"\"\" 
+\"\"\"
 {article_text}
 \"\"\"
 """
-        print("🧠 [OpenAI] Sending prompt...")
 
         try:
             response = await openai.ChatCompletion.acreate(
@@ -127,13 +128,11 @@ News:
                 temperature=0.3,
                 max_tokens=400,
             )
-
             reply = response["choices"][0]["message"]["content"]
-            print("📥 [OpenAI] Raw reply preview:", reply[:400])
+            print("📥 OpenAI Reply Preview:", reply[:400])
             return json.loads(reply)
-
         except Exception as e:
-            print("❌ [OpenAI] Analysis error:", e)
+            print("❌ OpenAI Analysis error:", e)
             return {
                 "headline": "⚠️ Analysis Failed",
                 "summary": "Could not analyze news.",
